@@ -11,9 +11,10 @@ your submission (video/demo + GitHub) → complete the survey.
 ## [ ] 0. Pre-flight (30 min)
 - [ ] Confirm you're comfortable entering (see eligibility note below).
 - [ ] Have a **GitHub** account and a **Binance** account.
-- [ ] Push the repo (`agent-skeptic/`) to a **public** GitHub repo.
-      - `git init`, `git add .`, commit, `git remote add origin <url>`, `git push`.
-- [ ] Double-check the repo runs from a clean clone: `python3 agentos_demo.py && python3 demo.py`.
+- [x] Push the repo (`agent-skeptic/`) to a **public** GitHub repo.
+      - Live at `https://github.com/hackid02/agent-skeptic` (branch `main`).
+- [x] Double-check the repo runs from a clean clone: `python3 agentos_demo.py && python3 demo.py`
+      (verified — all commands ran with exit 0 and zero tracebacks).
 
 ## [ ] 1. Video (the part that wins) — 60–90s
 - [ ] Record per `VIDEO_SCRIPT.md`. Lead with `python3 agentos_demo.py` (shows the

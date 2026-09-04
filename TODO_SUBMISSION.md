@@ -15,7 +15,9 @@ The brief requires **three things** for Track A:
 
 ---
 
-## [ ] 0. Get it onto GitHub (do this first — everything else links to it)
+## [x] 0. Get it onto GitHub — DONE
+Repo is live: `https://github.com/hackid02/agent-skeptic` (public, branch `main`).
+README now links the repo + author. Verify clean-clone run passed (4 commands, exit 0, zero tracebacks).
 
 The folder is **not a git repo yet**. Do:
 
@@ -45,7 +47,7 @@ fonts/licenses/
 > `__pycache__`, the `.agentos_token.json` (contains a live OAuth token — do NOT
 > commit it), and `*.pyc`.
 
-## [ ] 1. Verify it runs from a clean clone (so a judge isn't disappointed)
+## [x] 1. Verify it runs from a clean clone — DONE (exit 0, zero tracebacks on all 4 runs)
 
 ```bash
 python3 -m pip install -r requirements.txt
