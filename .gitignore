@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# OAuth token — NEVER commit (contains a live access token)
+.agentos_token.json
+.agentos_token*.json
+
+# Secrets / local config
+.env
+.env.*
+*.local
+
+# Logs / scratch
+*.log
+*.tmp
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

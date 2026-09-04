@@ -1,0 +1,38 @@
+<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Skeptic — Reflection</title><style>
+:root{--gold:#F3BA2F;--ink:#111;--mut:#666;--bg:#faf7f0;}
+*{box-sizing:border-box}body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+background:var(--bg);color:var(--ink);margin:0;padding:40px 16px;}
+.wrap{max-width:860px;margin:0 auto;}
+h1{font-size:28px;margin:0 0 4px;}h1 .dot{color:var(--gold);}
+.sub{color:var(--mut);font-size:14px;margin-bottom:28px;}
+.hero{background:#111;color:#fff;border-radius:16px;padding:24px;margin-bottom:24px;}
+.hero b{color:var(--gold);}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
+.card{background:#fff;border:1px solid #eee;border-radius:12px;padding:18px;}
+h3{margin:0 0 12px;font-size:14px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em;}
+.tbl{width:100%;border-collapse:collapse;font-size:14px;}
+.tbl td{padding:6px 0;border-bottom:1px solid #f2f2f2;}
+.tbl .k{color:var(--mut);}.tbl .v{text-align:right;font-weight:600;}
+ul{margin:0;padding-left:18px;font-size:14px;line-height:1.7;}
+code{background:#f4f4f4;padding:1px 5px;border-radius:4px;font-size:12px;}
+.foot{margin-top:26px;color:var(--mut);font-size:12px;text-align:center;}
+@media(max-width:640px){.cols{grid-template-columns:1fr}}
+</style></head><body><div class="wrap">
+<h1>The <span class="dot">●</span> Skeptic</h1>
+<div class="sub">Your agent's risk desk, in plain English. Reflection report.</div>
+<div class="hero"><b>The honest claim.</b> Same market, same agent, same 200 hourly bars
+(synth, seed 30). Left unwatched it churned <b>19</b> trades and drew down
+<b>2.2%</b>. Run under the Skeptic it traded <b>4</b> times, cut drawdown by
+<b>81%</b> and fees by
+<b>78%</b> — and stopped <b>93</b> reckless orders.
+This is not a profit promise; it's a stop-blooding-out promise.</div>
+<div class="cols">
+<div class="card"><h3>No guardrails</h3><table class='tbl'><tr><td class='k'>Trades taken</td><td class='v'>19</td></tr><tr><td class='k'>Max drawdown</td><td class='v'>2.2%</td></tr><tr><td class='k'>Fees paid</td><td class='v'>15.56 USDC</td></tr><tr><td class='k'>Ending equity</td><td class='v'>9,855 USDC</td></tr><tr><td class='k'>Reckless orders stopped</td><td class='v'>0</td></tr></table></div>
+<div class="card"><h3>Under the Skeptic</h3><table class='tbl'><tr><td class='k'>Trades taken</td><td class='v'>4</td></tr><tr><td class='k'>Max drawdown</td><td class='v'>0.4%</td></tr><tr><td class='k'>Fees paid</td><td class='v'>3.47 USDC</td></tr><tr><td class='k'>Ending equity</td><td class='v'>9,962 USDC</td></tr><tr><td class='k'>Reckless orders stopped</td><td class='v'>93</td></tr></table></div>
+</div>
+<div class="card" style="margin-top:18px"><h3>Rulebook it proposes (you own these)</h3>
+<ul><li><code>trade_cap</code> — Cap trades per window to prevent fee churn.</li><li><code>drawdown_guard</code> — Tighten the drawdown guard based on what I saw.</li><li><code>position_cap_learned</code> — Learned: keep single-position risk near 10%.</li></ul></div>
+<div class="foot">Simulated Agentic sub-account. No real funds, no orders, no keys.</div>
+</div></body></html>
