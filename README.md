@@ -7,6 +7,8 @@
 
 **Track A · Binance Agent OS Mini Hackathon · $20,000 USDC pool**
 
+**Repo:** [github.com/hackid02/agent-skeptic](https://github.com/hackid02/agent-skeptic) · **Author:** [@hackid02](https://github.com/hackid02)
+
 ---
 
 ## Why this exists
