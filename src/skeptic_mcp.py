@@ -70,15 +70,18 @@ class SkepticServer:
     # -- state helpers ----------------------------------------------------
     @staticmethod
     def _pair(symbol: str) -> str:
-        """Normalise a base symbol to a USDT pair the feed understands."""
+        """Normalise a base symbol to a USDT pair the feed understands.
+
+        Tolerates variant spellings from an AI agent: "BTC", "BTCUSDT",
+        "BTC-USDT", "BTC/USDT", "btc", "BTC_USDT" — all map to "BTCUSDT".
+        """
         s = symbol.upper().strip()
-        if s.endswith("USDT"):
-            return s
-        # accept "BTC/USDT" or "BTC"
-        s = s.replace("/", "").replace("-", "").replace("_", "")
-        if s.endswith("USDT"):
-            return s
-        return s + "USDT"
+        # Strip separators first (so "BTC-USDT"/"BTC/USDT" -> "BTCUSDT"),
+        # then ensure the quote is USDT.
+        s = s.replace("/", "").replace("-", "").replace("_", "").replace(" ", "")
+        if not s.endswith("USDT"):
+            s = s + "USDT"
+        return s
 
     def _equity(self) -> float:
         price = self._last_price()

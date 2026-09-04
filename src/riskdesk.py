@@ -47,8 +47,10 @@ def evaluate(intent: OrderIntent, rulebook: List[Rule], *, equity: float,
 
     severity/decisions:
       - risk-reducing orders are always fine (trim exposure).
-      - otherwise we apply the strictest rule set: any BLOCK -> reject.
-      - WARN rules downgrade size but don't stop it.
+      - a violated rule with severity "BLOCK" (or default) refuses the order.
+      - a violated rule with severity "WARN" only downgrades size (DOWNSIZE).
+      - size caps always trim the order to the cap, even when the order is
+        otherwise blocked, so the "why" reflects the real ceiling.
     """
     if intent.is_risk_reducing:
         return Verdict("APPROVE", intent.notional,
@@ -57,7 +59,8 @@ def evaluate(intent: OrderIntent, rulebook: List[Rule], *, equity: float,
 
     findings: List[Finding] = []
     final_notional = intent.notional
-    any_block = False
+    blocked = False     # a hard BLOCK-severity violation -> refuse
+    reduced = False     # a WARN-severity violation / a trimmed cap -> downsize
 
     for r in rulebook:
         kind = r.kind
@@ -65,13 +68,16 @@ def evaluate(intent: OrderIntent, rulebook: List[Rule], *, equity: float,
         if kind == "max_position_pct":
             cap = r.params["max"] * equity
             if intent.notional > cap:
-                any_block = True
                 findings.append(Finding(kind, True, (
                     f"{intent.symbol} {intent.notional:,.0f} USDC is {intent.notional/equity:.0%} of the "
                     f"account, above the {r.params['max']:.0%} single-position cap "
                     f"({cap:,.0f} USDC)."
                 )))
                 final_notional = min(final_notional, cap)
+                if r.severity == "WARN":
+                    reduced = True
+                else:
+                    blocked = True
             else:
                 findings.append(Finding(kind, False, f"Size OK ({intent.notional/equity:.0%} of account)."))
 
@@ -79,70 +85,88 @@ def evaluate(intent: OrderIntent, rulebook: List[Rule], *, equity: float,
             proj = open_exposure + intent.notional
             cap = r.params["max"] * equity
             if open_exposure > 0 and proj > cap:
-                any_block = True
                 findings.append(Finding(kind, True, (
                     f"Adding {intent.notional:,.0f} would push total exposure to {proj/equity:.0%}, "
                     f"over the {r.params['max']:.0%} cap."
                 )))
                 final_notional = min(final_notional, cap - open_exposure)
+                if r.severity == "WARN":
+                    reduced = True
+                else:
+                    blocked = True
             elif open_exposure == 0:
                 findings.append(Finding(kind, False, "No other open exposure — fine."))
 
         elif kind == "drawdown_guard":
             dd = (peak_equity - equity) / peak_equity if peak_equity else 0
             if dd >= r.params["max_dd"]:
-                any_block = True
                 findings.append(Finding(kind, True, (
                     f"Account is down {dd:.1%} from its peak ({r.params['max_dd']:.0%} guard) — "
                     f"no new risk until it recovers."
                 )))
+                if r.severity == "WARN":
+                    reduced = True
+                else:
+                    blocked = True
             else:
                 findings.append(Finding(kind, False, f"Drawdown {dd:.1%} is within guard."))
 
         elif kind == "volatility_band":
             lo, hi = r.params["min"], r.params["max"]
             if intent.vol > hi:
-                any_block = True
                 findings.append(Finding(kind, True, (
                     f"Recent volatility {intent.vol:.2%} is above the {hi:.2%} ceiling — "
                     f"buying the spike, not the trend."
                 )))
+                if r.severity == "WARN":
+                    reduced = True
+                else:
+                    blocked = True
             elif intent.vol < lo:
-                any_block = True
                 findings.append(Finding(kind, True, (
                     f"Recent volatility {intent.vol:.2%} is below the {lo:.2%} floor — "
                     f"no edge, just noise."
                 )))
+                if r.severity == "WARN":
+                    reduced = True
+                else:
+                    blocked = True
             else:
                 findings.append(Finding(kind, False, f"Volatility {intent.vol:.2%} is in band."))
 
         elif kind == "fee_budget":
             projected = fees_paid + intent.notional * 0.001 * 2  # round-trip fee
             if projected > r.params["max_fees"]:
-                any_block = True
                 findings.append(Finding(kind, True, (
                     f"~{projected:,.2f} USDC of round-trip fees would exceed the "
                     f"{r.params['max_fees']:,.2f} fee budget."
                 )))
+                if r.severity == "WARN":
+                    reduced = True
+                else:
+                    blocked = True
             else:
                 findings.append(Finding(kind, False, f"Fees (≈{projected:,.2f}) within budget."))
 
         elif kind == "max_sizing_multiplier":
             if intent.base_unit > 0 and intent.notional > intent.base_unit * r.params["max_mult"]:
-                any_block = True
                 findings.append(Finding(kind, True, (
                     f"Intended size is {intent.notional/intent.base_unit:.1f}x base unit — "
                     f"that's streak-driven greed."
                 )))
                 final_notional = intent.base_unit * r.params["max_mult"]
+                if r.severity == "WARN":
+                    reduced = True
+                else:
+                    blocked = True
             else:
                 findings.append(Finding(kind, False, "Sizing within cap."))
 
-    # A DOWNSIZE if we shrank the order but nothing forced a full block,
-    # or if the only findings were WARN-style caps that reduce size.
-    if any_block:
+    # A DOWNSIZE if we only had WARN-severity warnings (flagged, not refused) or
+    # the order was trimmed to a cap; a BLOCK if any BLOCK-severity rule fired.
+    if blocked:
         action = "BLOCK"
-    elif final_notional < intent.notional * 0.999:
+    elif reduced or final_notional < intent.notional * 0.999:
         action = "DOWNSIZE"
     else:
         action = "APPROVE"
