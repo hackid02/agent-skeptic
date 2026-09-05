@@ -104,7 +104,7 @@ def evaluate(intent: OrderIntent, rulebook: List[Rule], *, equity: float,
                 findings.append(Finding(kind, True, (
                     f"{intent.symbol} {intent.notional:,.0f} USDC is {intent.notional/equity:.0%} of the "
                     f"account, above the {r.params['max']:.0%} single-position cap "
-                    f"({cap:,.0f} USDC)."
+                    f"({cap:,.2f} USDC at current equity)."
                 )))
                 final_notional = min(final_notional, cap)
                 if r.severity == "WARN":
@@ -261,6 +261,12 @@ def plain_english(verdict: Verdict, intent: OrderIntent) -> str:
         # the finding that shrank it is the cap/limit message
         shrink = next((f.message for f in verdict.findings
                        if any(k in f.rule for k in ("max_position", "max_total", "max_sizing"))), "")
+        if 0 < intent.notional and verdict.proposed_notional >= intent.notional * 0.995:
+            # Trimmed by a hair (fees ate into the cap): say so plainly
+            # instead of the confusing "cut to 1,000 (100% of what was asked)".
+            return (f"Not a hard no — but I'd trim it right to the cap: "
+                    f"{verdict.proposed_notional:,.2f} USDC. "
+                    f"{shrink or 'It exceeds your sizing limits.'}")
         pct = (verdict.proposed_notional / intent.notional * 100) if intent.notional > 0 else 0.0
         return (f"Not a hard no — but I'd cut it to {verdict.proposed_notional:,.0f} USDC "
                 f"({pct:.0f}% of what was asked). "

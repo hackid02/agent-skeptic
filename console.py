@@ -630,7 +630,7 @@ def main():
     data["gov_equity"] = curve
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
-    with open(args.out, "w") as f:
+    with open(args.out, "w", encoding="utf-8") as f:
         f.write(render(data, args.seed, args.source))
     print(f"Console → {args.out} ({os.path.getsize(args.out)//1024} KB)")
 

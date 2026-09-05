@@ -140,7 +140,8 @@ async def login(args) -> None:
     # small helper to save for reuse
     import json, pathlib, os
     tok_file = pathlib.Path(args.token_file)
-    tok_file.write_text(json.dumps({"endpoint": agentos.AGENT_OS_MCP_URL, "token": token}))
+    tok_file.write_text(json.dumps({"endpoint": agentos.AGENT_OS_MCP_URL, "token": token}),
+                        encoding="utf-8")
     os.chmod(tok_file, 0o600)  # a live access token is not world-readable
     print(f"  Saved token → {tok_file} (reuse with --token-file).")
 

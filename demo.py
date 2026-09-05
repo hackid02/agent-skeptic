@@ -202,7 +202,7 @@ This is not a profit promise; it's a stop-blooding-out promise.</div>
 <div class="foot">Simulated Agentic sub-account. No real funds, no orders, no keys.</div>
 </div></body></html>"""
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    with open(out_path, "w") as f:
+    with open(out_path, "w", encoding="utf-8") as f:
         f.write(html)
     print(f"\n  Reflection report → {out_path}")
 
