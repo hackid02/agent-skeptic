@@ -28,17 +28,17 @@ demo is deterministic and runs anywhere.
 """
 from __future__ import annotations
 
-import asyncio
 import dataclasses
-import statistics
 from typing import List, Optional
 
-from .market import Bar, get_klines as _get_klines, recent_volatility as _recent_vol, last_price as _last_price
+from .market import Bar, get_klines as _get_klines, last_price as _last_price
 from .engine import SubAccount
 
 AGENT_OS_MCP_URL = "https://agent.binance.com/mcp/agentic"
 
-# Ordered, capability -> keyword hints used to find the right tool on the live server.
+# Capability -> keyword hints used to find the right tool on the live server.
+# For money-moving capabilities (place_order) matching is name-only: a hint
+# substring in some *description* must never pick the wrong tool.
 CAPABILITY_HINTS = {
     "klines": ("kline", "klines", "candlestick", "candle"),
     "ticker": ("ticker", "price", "quote", "24h", "book", "ticker24hr"),
@@ -46,6 +46,9 @@ CAPABILITY_HINTS = {
     "place_order": ("order", "place", "trade", "spot", "buy", "sell", "neworder"),
     "account": ("account", "balance", "positions", "sub-account", "agentic"),
 }
+
+# Capabilities that move money: matched strictly against tool NAMES only.
+_MONEY_MOVING = {"place_order"}
 
 
 @dataclasses.dataclass
@@ -122,15 +125,48 @@ class LiveAgentOS:
 
     async def close(self) -> None:
         if self._stack:
-            await self._stack.aclose()
-            self._stack = None
-            self._session = None
+            try:
+                await self._stack.aclose()
+            finally:
+                # Always clear, even when teardown itself raises — otherwise a
+                # teardown error masks the original connect() failure.
+                self._stack = None
+                self._session = None
 
     def _find_tool(self, cap: str) -> Optional[str]:
+        """Map a capability to a tool name, safest match first.
+
+        For money-moving capabilities (place_order) only the tool NAME counts,
+        and only an exact match or a name that *starts with* a hint as a whole
+        word segment ("place_order" for hint "place"). On a live server,
+        'cancel_order', 'query_order' and 'get_order_history' all contain the
+        word "order" — a loose match hands the order-placement arguments to
+        whichever lists first. Read-only capabilities may also match on
+        description keywords.
+        """
         hints = CAPABILITY_HINTS.get(cap, ())
-        for t in self._tools:
-            haystack = ((t.name or "") + " " + (t.description or "")).lower()
-            for h in hints:
+        money = cap in _MONEY_MOVING
+
+        def matches(name: str, h: str) -> bool:
+            n = (name or "").lower()
+            if n == h:
+                return True
+            if money:
+                # "place" -> place_order, place_spot_order; NOT cancel_order
+                return n.startswith(h + "_") or n.startswith(h + "-")
+            return n.startswith(h) or h in n.replace("-", "_").split("_")
+
+        # 1) tool names only, hint by hint
+        for h in hints:
+            for t in self._tools:
+                if matches(t.name, h):
+                    return t.name
+        # 2) description substrings — read-only capabilities only
+        if money:
+            return None
+        for h in hints:
+            for t in self._tools:
+                haystack = ((t.name or "") + " " + (t.description or "")).lower()
                 if h in haystack:
                     return t.name
         return None
@@ -167,8 +203,13 @@ class LiveAgentOS:
         raw = await self._call("ticker", {"symbol": symbol})
         d = _json(raw)
         d = d[0] if isinstance(d, list) and d else d
+        if not isinstance(d, dict):
+            raise RuntimeError(f"Agent OS ticker returned unusable data: {raw[:120]}")
         price = float(d.get("lastPrice") or d.get("price") or d.get("last") or 0)
         change = float(d.get("priceChangePercent") or d.get("change24h") or 0)
+        if price <= 0:
+            # A silent 0.0 price would flow straight into the risk math.
+            raise RuntimeError(f"Agent OS ticker for {symbol} had no usable price: {raw[:120]}")
         return Ticker(symbol, price, change)
 
     async def get_balance(self) -> List[Balance]:
@@ -179,7 +220,10 @@ class LiveAgentOS:
         for row in (d or []):
             if isinstance(row, dict) and ("asset" in row or "free" in row):
                 out.append(Balance(str(row.get("asset", "USDT")), float(row.get("free", 0))))
-        return out or [Balance("USDT", 0.0)]
+        if not out:
+            # Fail loudly rather than report a confident-looking zero balance.
+            raise RuntimeError(f"Agent OS balance returned no usable rows: {raw[:120]}")
+        return out
 
     async def place_order(self, symbol: str, side: str, notional: float,
                           order_type: str = "MARKET", price: Optional[float] = None) -> OrderResult:
@@ -282,22 +326,27 @@ async def connect(endpoint: str = AGENT_OS_MCP_URL, mode: str = "auto",
     # auto
     try:
         return await LiveAgentOS(endpoint, token=token).connect()
-    except Exception as e:
-        # deterministic fallback
+    except (Exception, BaseExceptionGroup) as e:
+        # BaseExceptionGroup matters: MCP teardown wraps CancelledError in a
+        # group, which is not an Exception subclass — the documented "auto
+        # falls back to sim" promise must survive its own teardown noise.
         sim = await SimulatedAgentOS(source=source, seed=seed).connect()
         sim._live_error = f"{type(e).__name__}: {e}"
         return sim
 
 
 def _json(text: str):
+    """Parse a tool result as JSON — or raise. Never return a fake {\"_raw\": ...}
+    payload that downstream code mistakes for real data (a 0.0 price in the
+    risk math, a 0.0 balance, a phantom fill)."""
     import json
-    text = text.strip()
+    text = (text or "").strip()
     if not text:
-        return {}
+        raise ValueError("Agent OS returned an empty payload.")
     try:
         return json.loads(text)
-    except Exception:
-        return {"_raw": text}
+    except Exception as e:
+        raise ValueError(f"Agent OS returned non-JSON: {text[:120]}") from e
 
 
 # -- sync convenience (for the existing demo console) ----------------------

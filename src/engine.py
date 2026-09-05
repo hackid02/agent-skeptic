@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import statistics
-from typing import List, Optional
+from typing import Dict, List
 
 from .market import Bar
 
@@ -47,13 +47,14 @@ class FlawedTrader:
         self.use_guardrails = use_guardrails
         self.rulebook = rulebook or []
 
-    def run(self, bars: List[Bar]) -> tuple[List[Decision], List[float]]:
+    def run(self, bars: List[Bar]) -> tuple[List[Decision], List[float], Dict]:
         cash = self.cash0
         position = 0.0
         entry = 0.0
         peak = cash
         fees_paid = 0.0
         streak = 0
+        trades = 0
         decisions: List[Decision] = []
         equity_curve: List[float] = []
         base_unit = cash * 0.10  # base sizing
@@ -92,6 +93,14 @@ class FlawedTrader:
                     action = "BUY"
                     proposed = notional
 
+            # Clamp to spendable cash BEFORE the risk desk sees the order, so
+            # what gets vetted is what could actually execute.
+            if action == "BUY":
+                notional = min(notional, cash)
+                if notional <= 0:
+                    action, why, tag = "HOLD", "insufficient cash", "hold"
+                proposed = notional if action == "BUY" else None
+
             # Guardrails: route through the risk desk if enabled
             if self.use_guardrails and proposed:
                 from .riskdesk import OrderIntent, evaluate, plain_english
@@ -100,16 +109,16 @@ class FlawedTrader:
                                      vol=vol, agent_why=why, base_unit=base_unit)
                 v = evaluate(intent, applicable_rules(self.rulebook), equity=equity(price),
                              open_exposure=open_exposure, peak_equity=max(peak, equity(price)),
-                             fees_paid=fees_paid)
+                             fees_paid=fees_paid, trades_taken=trades)
                 if v.action == "BLOCK":
                     action, notional, why, tag = "HOLD", 0.0, f"REFUSED: {plain_english(v, intent)}", "blocked"
                 elif v.action == "DOWNSIZE":
                     notional = v.proposed_notional
                     why += f" -> down-sized to {notional:,.0f} USDC by guardrails"
 
-            # execute
+            # execute exactly what was vetted (no post-vet clamping)
+            outcome = 0.0
             if action == "BUY":
-                notional = min(notional, cash)
                 if notional <= 0:
                     action, why, tag = "HOLD", "insufficient cash", "hold"
                 else:
@@ -120,25 +129,26 @@ class FlawedTrader:
                     entry = price
                     open_exposure = notional
                     last_trade = i
-                    streak = streak + 1 if (price > entry) else streak  # simple
+                    trades += 1
+                    # streak = consecutive profitable exits (updated on SELL);
+                    # a fresh BUY says nothing about a win yet.
             elif action == "SELL" and position > 0:
                 gross = position * price
                 fee = gross * self.fee_rate
                 cash += gross - fee
                 fees_paid += fee
                 pnl = (price - entry) * position
+                outcome = pnl
                 streak = streak + 1 if pnl > 0 else -1
                 position = 0.0
                 open_exposure = 0.0
                 last_trade = i
+                trades += 1
 
-            decisions.append(Decision(bars[i].timestamp, "BTC", price, action, notional, vol, why, tag=tag))
+            decisions.append(Decision(bars[i].timestamp, "BTC", price, action, notional, vol, why,
+                                      outcome=outcome, tag=tag))
             equity_curve.append(equity(price))
             peak = max(peak, equity(price))
 
-        # liquidate
-        if position > 0:
-            last = bars[-1]
-            cash += position * last.close
-            position = 0.0
-        return decisions, equity_curve
+        ledger = {"fees_paid": fees_paid, "trades": trades}
+        return decisions, equity_curve, ledger

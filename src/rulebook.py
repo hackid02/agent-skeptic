@@ -8,7 +8,7 @@ propose rules (via Reflection) but the human owns them.
 from __future__ import annotations
 
 import dataclasses
-from typing import List, Optional
+from typing import List
 
 
 @dataclasses.dataclass
@@ -16,8 +16,8 @@ class Rule:
     kind: str
     params: dict
     label: str
-    severity: str = "WARN"   # "BLOCK" (stop the order) | "WARN" (flag, allow)
-    source: str = "policy"   # "policy" default, or "reflection" (learned)
+    severity: str = "BLOCK"   # "BLOCK" (stop the order) | "WARN" (flag, downsize)
+    source: str = "policy"    # "policy" default, or "reflection" (learned)
 
     def describe(self) -> str:
         return self.label
@@ -72,3 +72,29 @@ DEFAULT_RULES: List[Rule] = [
 def applicable_rules(rulebook: List[Rule]) -> List[Rule]:
     """Return rules that actually constrain (skip purely-allow rules)."""
     return [r for r in rulebook if r.kind != "rebalance_target"]
+
+
+# A second, named profile. "strict" (the default) is the house rulebook used for
+# the headline A/B numbers. "balanced" flips the two sizing/fee rules to WARN so
+# an oversized order gets DOWNSIZED to the cap instead of refused — it exists so
+# the DOWNSIZE path is a real, exercised code path rather than dead logic.
+def _balanced_rules() -> List[Rule]:
+    out = []
+    for r in DEFAULT_RULES:
+        if r.kind in ("max_position_pct", "fee_budget"):
+            out.append(dataclasses.replace(r, severity="WARN",
+                                           label=r.label + " (balanced: warn + trim instead of refuse)"))
+        else:
+            out.append(r)
+    return out
+
+
+PROFILES = {"strict": lambda: list(DEFAULT_RULES), "balanced": _balanced_rules}
+
+
+def get_profile(name: str) -> List[Rule]:
+    """Return a fresh copy of a named rulebook profile (strict | balanced)."""
+    try:
+        return PROFILES[name]()
+    except KeyError:
+        raise ValueError(f"Unknown profile '{name}' — expected one of {sorted(PROFILES)}.")

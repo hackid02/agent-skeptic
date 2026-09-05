@@ -24,12 +24,18 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 from contextlib import AsyncExitStack
 
+import anyio
 from mcp.client.stdio import stdio_client, StdioServerParameters
 from mcp.client.session import ClientSession
 
 from src import agentos
+
+# Set to True at the end of drive(): if teardown noise arrives before the demo
+# finished, that's a real failure and must surface, not be swallowed.
+_drive_complete = False
 
 GATE = [
     ("Scene 1 · oversized, no-plan buy",   {"symbol": "BTC", "side": "BUY", "notional": 4200,
@@ -57,9 +63,12 @@ def show(obj):
 
 
 async def run_stdio(args) -> None:
-    params = StdioServerParameters(command="python3",
+    # sys.executable, not "python3": the child must run on the same interpreter
+    # (venv/conda/pyenv) as this demo or it won't see the `mcp` package.
+    params = StdioServerParameters(command=sys.executable,
                                    args=["skeptic_server.py", "--mode", args.mode,
-                                         "--seed", str(args.seed), "--source", args.source])
+                                         "--seed", str(args.seed), "--source", args.source,
+                                         "--profile", args.profile])
     try:
         async with AsyncExitStack() as stack:
             r, w = await stack.enter_async_context(stdio_client(params))
@@ -73,21 +82,27 @@ async def run_stdio(args) -> None:
                 pass
             await stack.aclose()
     except BaseExceptionGroup as e:
-        # MCP 2.x stdio raises a benign ExceptionGroup during subprocess teardown.
-        # If the work above already completed and there was no real task error,
-        # swallow it so the demo logs exit cleanly; otherwise re-raise.
+        # MCP 2.x stdio raises a benign ExceptionGroup during subprocess
+        # teardown. Benign ONLY if the demo already completed AND every leaf is
+        # a known transport-shutdown type — anything else is a real failure.
         if _real_error(e):
             raise
 
 
+# Exception types that are normal MCP stdio teardown noise. Matched by TYPE,
+# never by message substring: MCP wraps a dead subprocess in a TaskGroup whose
+# message is literally "unhandled errors in a TaskGroup", which a substring
+# filter would happily swallow.
+_BENIGN_TEARDOWN = (asyncio.CancelledError, SystemExit,
+                    anyio.ClosedResourceError, anyio.BrokenResourceError)
+
+
 def _real_error(g) -> bool:
-    """True if the group carries a genuine failure (not just SDS teardown noise)."""
+    """True if the group carries a genuine failure (not just MCP teardown noise)."""
+    if not _drive_complete:
+        return True  # teardown noise before the demo finished = the demo failed
     for ex in _leaves(g):
-        if isinstance(ex, (asyncio.CancelledError, SystemExit)):
-            continue
-        msg = str(ex).lower()
-        if any(k in msg for k in ("cancel scope", "closed", "canceled", "cancelled",
-                                  "broken pipe", "task group", "unhandled errors")):
+        if isinstance(ex, _BENIGN_TEARDOWN):
             continue
         return True
     return False
@@ -117,15 +132,16 @@ async def login(args) -> None:
     print("  dedicated Agentic sub-account. You can cancel at any time.")
     print(f"  Scope: {args.scope} (start with the least you need).\n")
 
-    result = await agentos_oauth.interactive_login(client_id="agentic")
-    meta, token = result["meta"], result["token"]
+    result = await agentos_oauth.interactive_login(client_id="agentic", scope=args.scope)
+    token = result["token"]
     access = token.get("access_token", "")
     print(f"\n  ✓ got access token (len {len(access)}).")
 
     # small helper to save for reuse
-    import json, pathlib
+    import json, pathlib, os
     tok_file = pathlib.Path(args.token_file)
     tok_file.write_text(json.dumps({"endpoint": agentos.AGENT_OS_MCP_URL, "token": token}))
+    os.chmod(tok_file, 0o600)  # a live access token is not world-readable
     print(f"  Saved token → {tok_file} (reuse with --token-file).")
 
     print("\n  Connecting to Agent OS with the token...")
@@ -224,7 +240,7 @@ async def run_http(args) -> None:
 
 
 async def drive(session: ClientSession, args) -> None:
-    ref = await session.initialize() if False else None
+    global _drive_complete
     tools = await session.list_tools()
     print(f"  MCP server toolset: {', '.join(t.name for t in tools.tools)}\n")
 
@@ -235,11 +251,12 @@ async def drive(session: ClientSession, args) -> None:
         res = await session.call_tool("vet_order", intent)
         d = json.loads(res.content[0].text)
         verdict = d["action"]
-        icon = {"APPROVE": "✅ APPROVE", "DOWNSIZE": "⚠️  DOWNSIZE", "BLOCK": "🚫 BLOCK"}[verdict]
+        icon = {"APPROVE": "✅ APPROVE", "DOWNSIZE": "⚠️  DOWNSIZE", "BLOCK": "🚫 BLOCK"}.get(verdict, verdict)
         print(f"    {icon}   @ ${d['price']:,.0f}  (vol {d['volatility']:.2%})")
         print(f"      {d['plain_english']}")
         if verdict == "APPROVE":
-            # demonstrate the human gate: mark one approved, one rejected
+            # demonstrate the human gate on the fits (the reject path runs on
+            # the blocked scenes below)
             gate = {"note": "Human OK — looks fit."} if "Scene 5" not in title else {"note": "Trim before weekend."}
             out = await session.call_tool("approve", gate)
             a = json.loads(out.content[0].text)
@@ -252,7 +269,7 @@ async def drive(session: ClientSession, args) -> None:
             out = await session.call_tool("reject", {"note": "Not spending on this."})
             print(f"      → reject: {json.loads(out.content[0].text).get('status')}")
 
-    bar("REFLEXION — the honest A/B (same market, same agent)")
+    bar("REFLECTION — the honest A/B (same market, same agent)")
     ab = await session.call_tool("run_ab", {"symbol": "BTCUSDT", "seed": args.seed})
     r = json.loads(ab.content[0].text)
     c, g = r["control"], r["governed"]
@@ -267,7 +284,7 @@ async def drive(session: ClientSession, args) -> None:
         print(f"  {name:<22}{str(a):<16}{str(b):<16}")
     print(f"\n  → drawdown cut {r['improvement']['drawdown_pct']:.0f}%, fees cut {r['improvement']['fee_pct']:.0f}%.")
 
-    bar("REFLEXION — draft rulebook changes (YOU decide)")
+    bar("REFLECTION — draft rulebook changes (YOU decide)")
     prop = await session.call_tool("propose_rulebook_update", {})
     p = json.loads(prop.content[0].text)
     print(f"  {p['note']}")
@@ -278,6 +295,7 @@ async def drive(session: ClientSession, args) -> None:
     server_name = getattr(getattr(session, "server_info", None), "name", "the-skeptic")
     print(f"  Backend: {server_name} — dry-run, no funds, no keys.")
     print("  Not a profit promise: the goal is fewer reckless trades, lower drawdown and less fee burn.")
+    _drive_complete = True  # only now may teardown noise be treated as benign
 
 
 def main() -> None:
@@ -285,6 +303,9 @@ def main() -> None:
     ap.add_argument("--mode", default="sim", choices=["auto", "live", "sim"],
                     help="sim=dry-run, auto=try live Agent OS then sim, live=require Agent OS")
     ap.add_argument("--source", default="auto", choices=["auto", "live", "synth"])
+    ap.add_argument("--profile", default="strict", choices=["strict", "balanced"],
+                    help="rulebook profile for the server: strict (default) or balanced "
+                         "(oversized orders get DOWNSIZED instead of refused)")
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--transport", default="stdio", choices=["stdio", "streamable-http"])
     ap.add_argument("--host", default="127.0.0.1")
@@ -298,6 +319,14 @@ def main() -> None:
     ap.add_argument("--token-file", default=".agentos_token.json",
                     help="where to save/read the OAuth token")
     args = ap.parse_args()
+
+    # The dry-run demo must tell the same story every time. With source=auto it
+    # would swallow live market data whenever Binance is reachable, and e.g. a
+    # quiet live hour (vol under the 0.40% floor) blocks the "disciplined
+    # entry" scene — no fills, no approval gate, different demo. Deterministic
+    # by default; --source live/auto opts into real data explicitly.
+    if args.mode == "sim" and "--source" not in sys.argv:
+        args.source = "synth"
 
     if args.login:
         asyncio.run(login(args))

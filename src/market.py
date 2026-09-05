@@ -6,7 +6,6 @@ judge whether an order is reckless. No auth, no funds.
 from __future__ import annotations
 
 import dataclasses
-import math
 import random
 import statistics
 from typing import List
@@ -15,6 +14,16 @@ import requests
 
 _BINANCE_KLINES = "https://api.binance.com/api/v3/klines"
 _FALLBACK = "https://api.exchange.coinbase.com/products/{pair}/candles"
+
+# Price anchors for the deterministic synthetic feed. This is the *only* set of
+# assets the sim can price honestly — anything else must fail loudly rather
+# than invent a price (the class of bug fixed alongside this constant).
+SYNTH_BASES = {"BTCUSDT": 67000, "ETHUSDT": 3400, "SOLUSDT": 150, "BNBUSDT": 580}
+KNOWN_BASE_ASSETS = {pair[:-4] for pair in SYNTH_BASES}
+
+# Data sources get_klines() understands. Anything else raises — a typo'd source
+# silently returning synthetic numbers is worse than an error.
+VALID_SOURCES = ("auto", "live", "synth")
 
 
 @dataclasses.dataclass
@@ -27,10 +36,31 @@ class Bar:
     timestamp: int
 
 
+def normalize_pair(symbol: str) -> str:
+    """Normalise an agent-supplied symbol to a USDT pair we can actually price.
+
+    Tolerates variant spellings: "BTC", "BTCUSDT", "BTC-USDT", "BTC/USDT",
+    "btc", "BTC_USDT" -> "BTCUSDT". Anything we cannot price honestly
+    (unknown asset, missing asset, a non-USDT quote like "ETH-BTC") raises
+    ValueError instead of fabricating a pair.
+    """
+    if not isinstance(symbol, str) or not symbol.strip():
+        raise ValueError("No symbol given — I need an asset like 'BTC' or 'BTCUSDT'.")
+    s = symbol.upper().strip().replace("/", "").replace("-", "").replace("_", "").replace(" ", "")
+    base = s[:-4] if s.endswith("USDT") else s
+    if base in KNOWN_BASE_ASSETS:
+        return base + "USDT"
+    known = ", ".join(sorted(KNOWN_BASE_ASSETS))
+    raise ValueError(f"I can't price '{symbol}' — I only vet {known} (as USDT pairs).")
+
+
 def _interval_seconds(interval: str) -> int:
-    unit, amt = interval[-1], int(interval[:-1]) if interval[:-1] else 1
-    m = {"m": 60, "h": 3600, "d": 86400}[unit]
-    return amt * m
+    import re
+    m = re.fullmatch(r"(\d+)([mhdw])", interval.strip()) if isinstance(interval, str) else None
+    if not m:
+        raise ValueError(f"Unknown interval '{interval}' — use e.g. '1m', '1h', '4h', '1d', '1w'.")
+    amt, unit = int(m.group(1)), m.group(2)
+    return amt * {"m": 60, "h": 3600, "d": 86400, "w": 604800}[unit]
 
 
 def _fetch_live(symbol: str, interval: str, limit: int) -> List[Bar]:
@@ -41,8 +71,11 @@ def _fetch_live(symbol: str, interval: str, limit: int) -> List[Bar]:
                          params={"symbol": symbol, "interval": interval, "limit": limit}, timeout=8)
         if r.status_code == 200:
             rows = r.json()
-            return [Bar(float(x[1]), float(x[2]), float(x[3]), float(x[4]), float(x[5]), int(x[0])) for x in rows]
-        errs.append(ValueError(f"binance {r.status_code}"))
+            if rows:
+                return [Bar(float(x[1]), float(x[2]), float(x[3]), float(x[4]), float(x[5]), int(x[0])) for x in rows]
+            errs.append(ValueError("binance returned an empty series"))
+        else:
+            errs.append(ValueError(f"binance {r.status_code}"))
     except Exception as e:
         errs.append(e)
     # 2) Coinbase (no key)
@@ -52,11 +85,14 @@ def _fetch_live(symbol: str, interval: str, limit: int) -> List[Bar]:
                          params={"granularity": g}, timeout=8)
         if r.status_code == 200:
             rows = sorted(r.json(), key=lambda x: x[0])[-limit:]
-            bars = []
-            for ts, low, high, o, c, vol in rows:
-                bars.append(Bar(float(o), float(high), float(low), float(c), float(vol), int(ts)))
-            return bars
-        errs.append(ValueError(f"coinbase {r.status_code}"))
+            if rows:
+                bars = []
+                for ts, low, high, o, c, vol in rows:
+                    bars.append(Bar(float(o), float(high), float(low), float(c), float(vol), int(ts)))
+                return bars
+            errs.append(ValueError("coinbase returned an empty series"))
+        else:
+            errs.append(ValueError(f"coinbase {r.status_code}"))
     except Exception as e:
         errs.append(e)
     raise ConnectionError(f"live failed: {errs}")
@@ -65,7 +101,11 @@ def _fetch_live(symbol: str, interval: str, limit: int) -> List[Bar]:
 def _synth(symbol: str, interval: str, limit: int, seed: int) -> List[Bar]:
     rng = random.Random(seed)
     step = _interval_seconds(interval)
-    base = {"BTCUSDT": 67000, "ETHUSDT": 3400, "SOLUSDT": 150, "BNBUSDT": 580}.get(symbol, 100)
+    if symbol not in SYNTH_BASES:
+        # Never invent a price for an asset we don't model — that produces
+        # confident-looking verdicts built on a fabricated number.
+        raise ValueError(f"No synthetic price model for '{symbol}'. Known: {sorted(SYNTH_BASES)}")
+    base = SYNTH_BASES[symbol]
     sigma = {"1h": 0.006, "4h": 0.01}.get(interval, 0.006)
     price = float(base)
     anchor = float(base)
@@ -89,6 +129,8 @@ def _synth(symbol: str, interval: str, limit: int, seed: int) -> List[Bar]:
 
 
 def get_klines(symbol="BTCUSDT", interval="1h", limit=200, source="auto", seed=7) -> List[Bar]:
+    if source not in VALID_SOURCES:
+        raise ValueError(f"Unknown source '{source}' — expected one of {VALID_SOURCES}.")
     if source == "auto":
         try:
             return _fetch_live(symbol, interval, limit)

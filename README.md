@@ -78,9 +78,13 @@ candles; results vary with the market — that's the point. We never claim profi
 
 ```bash
 cd agent-skeptic
-python3 -m pip install -r requirements.txt   # requests + mcp
+# Use a venv — on PEP 668 systems (Ubuntu 24, Debian 12, Homebrew Python) a
+# bare `pip install` fails with `externally-managed-environment`.
+python3 -m venv .venv && source .venv/bin/activate
+python3 -m pip install -r requirements.txt   # requests + mcp + httpx
 python3 agentos_demo.py --mode live --probe  # ★ prove the real Agent OS connection (read-only, no auth)
 python3 agentos_demo.py         # ★ built-with-Agent-OS demo: real MCP client → The Skeptic server
+python3 agentos_demo.py --profile balanced   # same demo, oversized orders get DOWNSIZED, not refused
 python3 demo.py                 # scripted terminal demo (auto-approves); best for the video
 python3 demo.py --interactive   # you type Y/n for each order
 python3 demo.py --source live   # real coin market data

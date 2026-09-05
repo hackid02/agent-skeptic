@@ -74,9 +74,15 @@ def _chip(action):
 
 
 def _feed_rows(feed):
+    # html.escape: 'why' strings embed the calling agent's free-text reason
+    # (vet_order accepts it verbatim), and this HTML is a shareable artifact.
+    import html as _html
     return "".join(
-        f"<tr><td class='t'>{f['t']}</td><td class='side'>{f['side']}</td><td class='sym'>{f['sym']}</td>"
-        f"<td class='not'>{f['notional']}</td><td>{_chip(f['act'])}</td><td class='why'>{f['why']}</td></tr>"
+        f"<tr><td class='t'>{_html.escape(str(f['t']))}</td>"
+        f"<td class='side'>{_html.escape(str(f['side']))}</td>"
+        f"<td class='sym'>{_html.escape(str(f['sym']))}</td>"
+        f"<td class='not'>{_html.escape(str(f['notional']))}</td>"
+        f"<td>{_chip(f['act'])}</td><td class='why'>{_html.escape(str(f['why']))}</td></tr>"
         for f in feed)
 
 
@@ -343,11 +349,6 @@ def body_html(data, seed, source) -> str:
     dd_pct = dd_saved / c["max_drawdown"] * 100 if c["max_drawdown"] else 0
     fee_pct = fee_saved / c["fees"] * 100 if c["fees"] else 0
     eq = data.get("gov_equity", []) or [10000, 10010]
-    eq_json = json.dumps([round(v, 2) for v in eq])
-    start_eq = max(eq[0], 1)
-    # drawdown donut
-    dd_max = max(c["max_drawdown"], 0.01)
-    dd_ratio = min(g["max_drawdown"] / dd_max, 1.0)
 
     kpi_dd = (f"<div class='kpi'><div class='k'><span>Max drawdown</span><span class='d'>↓ {dd_pct:.0f}%</span></div>"
               f"<div class='n up'>{g['max_drawdown']:.2f}%</div>{_svg_spark(eq,120,30)}"
@@ -361,7 +362,7 @@ def body_html(data, seed, source) -> str:
                 f"<circle cx='33' cy='33' r='2.5' fill='var(--accent)'/></svg>"
                 f"<div class='dots' style='position:absolute;width:66px;height:66px'><i style='top:14px;left:44px'></i>"
                 f"<i class='b' style='top:40px;left:20px'></i></div></div></div>"
-                f"<div class='delta'>rejected before execution</div></div>")
+                "<div class='delta'>rejected before execution</div></div>")
     kpi_tr = (f"<div class='kpi'><div class='k'><span>Trades taken</span></div><div class='n'>{g['trades']}</div>"
               f"{_svg_spark([0,1,1,2,2,3,3,4],120,30)}<div class='delta'>vs {c['trades']} unwatched</div></div>")
     kpi_fee = (f"<div class='kpi'><div class='k'><span>Fees burned</span><span class='d'>↓ {fee_pct:.0f}%</span></div>"
@@ -372,7 +373,7 @@ def body_html(data, seed, source) -> str:
                ("Drawdown", c["max_drawdown"]*100, g["max_drawdown"]*100),
                ("Fees", c["fees"], g["fees"])]
     n = len(metrics); bw = 200/n
-    bs = [f"<svg width='200' height='60' viewBox='0 0 200 60' preserveAspectRatio='none'>"]
+    bs = ["<svg width='200' height='60' viewBox='0 0 200 60' preserveAspectRatio='none'>"]
     for i, (nm, x, y) in enumerate(metrics):
         mx = max(x, y) or 1; cx = (i+0.5)*bw
         bs.append(f"<rect x='{cx-bw*0.22:.1f}' y='{60-(x/mx)*56-2:.1f}' width='{bw*0.42:.1f}' height='{(x/mx)*56:.1f}' rx='1.5' fill='var(--faint)'/>")
@@ -625,7 +626,7 @@ def main():
     from src.engine import FlawedTrader
     from src.market import get_klines
     bars = get_klines("BTCUSDT", "1h", 200, source=args.source, seed=args.seed)
-    _flat, curve = FlawedTrader(10000.0, 0.001, use_guardrails=True, rulebook=DEFAULT_RULES).run(bars)
+    _flat, curve, _ledger = FlawedTrader(10000.0, 0.001, use_guardrails=True, rulebook=DEFAULT_RULES).run(bars)
     data["gov_equity"] = curve
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)

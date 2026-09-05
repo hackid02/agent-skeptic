@@ -68,16 +68,20 @@ async def discover(base_url: str = "https://agent.binance.com/mcp/agentic") -> D
 
 
 def build_authorize_url(meta: Dict, client_id: str, code_challenge: str,
-                        state: str, redirect_uri: str = DEFAULT_REDIRECT_URI) -> str:
+                        state: str, redirect_uri: str = DEFAULT_REDIRECT_URI,
+                        scope: Optional[str] = None) -> str:
     """Build the URL the user opens to approve access."""
-    q = urllib.parse.urlencode({
+    params = {
         "response_type": "code",
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
         "state": state,
-    })
+    }
+    if scope:
+        params["scope"] = scope  # only request what was announced
+    q = urllib.parse.urlencode(params)
     return meta["authorization_endpoint"] + "?" + q
 
 
@@ -99,8 +103,11 @@ async def exchange_code(meta: Dict, client_id: str, code: str, code_verifier: st
         return body
 
 
-async def refresh_token(meta: Dict, refresh_token: str) -> Dict:
-    data = {"grant_type": "refresh_token", "refresh_token": refresh_token}
+async def refresh_token(meta: Dict, refresh_token: str, client_id: str = "agentic") -> Dict:
+    """Refresh an access token. RFC 6749 §6: a public client (auth method
+    'none') MUST authenticate with its client_id here."""
+    data = {"grant_type": "refresh_token", "refresh_token": refresh_token,
+            "client_id": client_id}
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.post(meta["token_endpoint"], data=data)
         body = resp.json()
@@ -110,7 +117,8 @@ async def refresh_token(meta: Dict, refresh_token: str) -> Dict:
 
 
 async def interactive_login(base_url: str = "https://agent.binance.com/mcp/agentic",
-                            client_id: str = "agentic", redirect_uri: str = DEFAULT_REDIRECT_URI) -> Dict:
+                            client_id: str = "agentic", redirect_uri: str = DEFAULT_REDIRECT_URI,
+                            scope: Optional[str] = None) -> Dict:
     """Full Authorization Code + PKCE flow with a local callback server.
 
     Prints the authorize URL, opens it in the browser (if available), listens
@@ -122,7 +130,7 @@ async def interactive_login(base_url: str = "https://agent.binance.com/mcp/agent
     meta = await discover(base_url)
     verifier, challenge = generate_pkce()
     state = _b64url(secrets.token_bytes(16))
-    url = build_authorize_url(meta, client_id, challenge, state, redirect_uri)
+    url = build_authorize_url(meta, client_id, challenge, state, redirect_uri, scope=scope)
 
     # optional: try to open the browser
     try:
@@ -130,68 +138,88 @@ async def interactive_login(base_url: str = "https://agent.binance.com/mcp/agent
     except Exception:
         pass
 
-    print(f"\n  Open this URL in your browser and approve:")
+    print("\n  Open this URL in your browser and approve:")
     print(f"    {url}")
 
     # capture the code from a tiny local redirect server
     code = await _wait_for_code(state, redirect_uri)
-    print(f"\n  ✓ received authorization code.")
+    print("\n  ✓ received authorization code.")
     token = await exchange_code(meta, client_id, code, verifier, redirect_uri)
     return {"meta": meta, "token": token}
 
 
 async def _wait_for_code(state: str, redirect_uri: str, timeout: int = 300) -> str:
-    """Run a one-shot local callback server to capture the redirected code."""
+    """Run a one-shot local callback server to capture the redirected code.
+
+    The HTTP server runs in its own thread and never touches the asyncio loop
+    (that thread has no running loop — the old loop.create_task call here was
+    a live TypeError). The handler records the result and pokes a
+    threading.Event; the async side polls and owns shutdown.
+    """
     from urllib.parse import urlparse, parse_qs
     from http.server import BaseHTTPRequestHandler, HTTPServer
+    import threading
 
     parsed = urlparse(redirect_uri)
     host, port = parsed.hostname or "127.0.0.1", parsed.port or 8080
     got: Dict = {}
-    loop = asyncio.get_event_loop()
+    done = threading.Event()
 
     class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            q = parse_qs(urlparse(self.path).query)
-            state_in = q.get("state", [None])[0]
-            if state_in != state:
-                self.send_response(400)
-                self.end_headers()
-                self.wfile.write(b"state mismatch")
-                got["error"] = "state mismatch"
-                return
-            got["code"] = q.get("code", [None])[0]
-            self.send_response(200)
+        def _reply(self, ok: bool, title: str, body: str):
+            self.send_response(200 if ok else 400)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(
-                ("<html><body style='font-family:sans-serif;padding:40px'>"
-                 "<h2>\u2705 Connected to Agent OS</h2>"
-                 "<p>You can close this tab and return to the terminal.</p>"
-                 "</body></html>").encode("utf-8"))
-            loop.create_task(_shutdown(later_cb))
+                (f"<html><body style='font-family:sans-serif;padding:40px'>"
+                 f"<h2>{title}</h2><p>{body}</p>"
+                 f"</body></html>").encode("utf-8"))
+
+        def do_GET(self):
+            q = parse_qs(urlparse(self.path).query)
+            # Provider error redirect (e.g. the user denied consent): fail
+            # loudly and immediately — not as a misleading "state mismatch"
+            # and not as a full 300-second hang.
+            err = q.get("error", [None])[0]
+            if err:
+                desc = q.get("error_description", [""])[0]
+                got["error"] = f"Authorization failed: {err}" + (f" ({desc})" if desc else "")
+                self._reply(False, "\u274c Not connected", "You can close this tab.")
+                done.set()
+                return
+            state_in = q.get("state", [None])[0]
+            if state_in != state:
+                got["error"] = "state mismatch (possible CSRF \u2014 aborting)"
+                self._reply(False, "\u274c Not connected", "State check failed.")
+                done.set()
+                return
+            code = q.get("code", [None])[0]
+            if not code:
+                got["error"] = "Redirect carried no authorization code."
+                self._reply(False, "\u274c Not connected", "No code was returned.")
+                done.set()
+                return
+            got["code"] = code
+            self._reply(True, "\u2705 Connected to Agent OS",
+                        "You can close this tab and return to the terminal.")
+            done.set()
 
         def log_message(self, *a):
             pass
 
-    def _shutdown():
-        async def _stop():
-            await asyncio.sleep(0.2)
-            server.shutdown()
-        return asyncio.create_task(_stop())
-
-    later_cb = None
     server = HTTPServer((host, port), Handler)
-    # run server in a thread; poll for the code
-    import threading
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
     try:
-        for _ in range(timeout * 10):
+        # Poll from the async side; the handler thread only records + signals.
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
             if got.get("code"):
                 return got["code"]
             if got.get("error"):
                 raise RuntimeError(got["error"])
-            await asyncio.sleep(0.1)
+            done.wait(timeout=0.1)
         raise TimeoutError("No authorization code received within timeout.")
     finally:
         server.shutdown()

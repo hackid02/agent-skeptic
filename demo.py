@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import os
-from typing import List
 
 from src.rulebook import DEFAULT_RULES, applicable_rules
 from src.riskdesk import OrderIntent, evaluate, plain_english, Verdict
