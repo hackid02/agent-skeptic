@@ -8,6 +8,7 @@
 **Track A · Binance Agent OS Mini Hackathon · $20,000 USDC pool**
 
 **Repo:** [github.com/hackid02/agent-skeptic](https://github.com/hackid02/agent-skeptic) · **Author:** [@hackid02](https://github.com/hackid02)
+**▶️ Demo video (88s):** [watch on X](https://x.com/web3_YSL/status/2096501565536305653)
 
 ---
 
@@ -22,7 +23,7 @@ your agent's reasoning, so what stops it from blowing up?"*
 **The Skeptic is the answer to that question.** It doesn't promise profits (no
 honest agent should). It makes an agent *safe to let near money*:
 
-- It **vet every order before it executes** — the exact confirm-before-execute
+- It **vets every order before it executes** — the exact confirm-before-execute
   model Agent OS is built on.
 - It explains **why** in plain English, based on **explicit rules you own** —
   the "your rules, your agents" thesis.
